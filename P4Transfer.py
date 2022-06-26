@@ -857,6 +857,11 @@ class P4Base(object):
         if self.P4PASSWD is not None:
             self.p4.password = self.P4PASSWD
             self.p4.run_login()
+    
+    # 1047 Custom - Reconnect functionality (used to avoid timeouts)
+    def reconnect(self, progname):
+        self.disconnect()
+        self.connect(progname)
 
     def streamMatches(self, srcName, streamName):
         "Decides if stream matches the source view (which may contain wildcards)"
@@ -915,36 +920,42 @@ class P4Base(object):
                 for s in self.matchingStreams:
                     src = s[0]
                     srcPath = src.replace('//', '')
-                    line = "%s/... //%s/%s/..." % (src, self.p4.client, srcPath)
+                    # 1047 Custom - Don't copy to src path subfolder
+                    line = "%s/... //%s/..." % (src, self.p4.client)
                     clientspec._view.append(line)
+                    # 1047 Custom - Exclude files when pulling
+                    for exclude_path in self.options.exclude_paths:
+                        line = "-%s%s //%s%s" % (src, exclude_path, self.p4.client, exclude_path)
+                        clientspec._view.append(line)
             else:
-                transferStream = self.p4.fetch_stream(self.options.transfer_target_stream)
-                origStream = dict(transferStream)
-                transferStream["Type"] = "mainline"
-                transferStream["Paths"] = []
-                targStreamsUpdated = False
-                for v in self.options.stream_views:
-                    for s in matchingStreams:   # Array of tuples passed in
-                        src = s[0]
-                        targ = s[1]
-                        if not self.streamMatches(v['src'], src):
-                            continue
-                        srcPath = src.replace('//', '')
-                        line = "import+ %s/... %s/..." % (srcPath, targ)
-                        transferStream["Paths"].append(line)
-                        targStream = self.p4.fetch_stream('-t', v['type'], targ)
-                        origTargStream = dict(targStream)
-                        targStream['Type'] = v['type']
-                        if v['parent']:
-                            targStream['Parent'] = v['parent']
-                        if (origTargStream['Type'] != targStream['Type'] and
-                           origTargStream['Parent'] != targStream['Parent']) or \
-                           ('Update' not in targStream):  # As in this is a new stream
-                            self.p4.save_stream(targStream)
-                            targStreamsUpdated = True
-                if targStreamsUpdated or (origStream["Type"] != transferStream["Type"] and
-                   origStream["Paths"] != transferStream["Paths"]):
-                    self.p4.save_stream(transferStream)
+                # 1047 Custom - Don't create a new stream
+                # transferStream = self.p4.fetch_stream(self.options.transfer_target_stream)
+                # origStream = dict(transferStream)
+                # transferStream["Type"] = "mainline"
+                # transferStream["Paths"] = []
+                # targStreamsUpdated = False
+                # for v in self.options.stream_views:
+                #     for s in matchingStreams:   # Array of tuples passed in
+                #         src = s[0]
+                #         targ = s[1]
+                #         if not self.streamMatches(v['src'], src):
+                #             continue
+                #         srcPath = src.replace('//', '')
+                #         line = "import+ %s/... %s/..." % (srcPath, targ)
+                #         transferStream["Paths"].append(line)
+                #         targStream = self.p4.fetch_stream('-t', v['type'], targ)
+                #         origTargStream = dict(targStream)
+                #         targStream['Type'] = v['type']
+                #         if v['parent']:
+                #             targStream['Parent'] = v['parent']
+                #         if (origTargStream['Type'] != targStream['Type'] and
+                #            origTargStream['Parent'] != targStream['Parent']) or \
+                #            ('Update' not in targStream):  # As in this is a new stream
+                #             self.p4.save_stream(targStream)
+                #             targStreamsUpdated = True
+                # if targStreamsUpdated or (origStream["Type"] != transferStream["Type"] and
+                #    origStream["Paths"] != transferStream["Paths"]):
+                #     self.p4.save_stream(transferStream)
                 clientspec['Stream'] = self.options.transfer_target_stream
         else:   # Ordinary workspace views which allow exclusions
             exclude = ''
@@ -1242,7 +1253,8 @@ class P4Source(P4Base):
         moveRevs, specialMoveRevs = movetracker.getMoves("getChange")
         fileRevs.extend(moveRevs)
         syncCallback = SyncOutput(self.p4id, self.logger, self.progress)
-        self.p4cmd('sync', '//{}/...@={}'.format(self.P4CLIENT, changeNum), handler=syncCallback)
+        # 1047 Custom - Parallel sync
+        self.p4cmd('sync', '--parallel=threads=8', '//{}/...@={}'.format(self.P4CLIENT, changeNum), handler=syncCallback)
         for flog in filelogs:
             if flog.depotFile in filesToLog:
                 chRev = filesToLog[flog.depotFile]
@@ -1302,7 +1314,8 @@ class P4Source(P4Base):
             return
         self.progress.ReportChangeSync()
         syncCallback = SyncOutput(self.p4id, self.logger, self.progress)
-        self.p4cmd('sync', '//{}/...@{}'.format(self.P4CLIENT, self.options.historical_start_change), handler=syncCallback)
+        # 1047 Custom - Parallel sync
+        self.p4cmd('sync', '--parallel=threads=8', '//{}/...@{}'.format(self.P4CLIENT, self.options.historical_start_change), handler=syncCallback)
 
 
 class P4Target(P4Base):
@@ -1343,7 +1356,8 @@ class P4Target(P4Base):
         if not self.options.re_ignore_files:
             return False
         for exp in self.options.re_ignore_files:
-            if exp.search(fname):
+            # 1047 Custom - Ignore Case
+            if exp.search(fname, re.IGNORECASE):
                 return True
         return False
 
@@ -1403,7 +1417,8 @@ class P4Target(P4Base):
 
             if self.options.historical_start_change:
                 self.adjustTargetHistoricalIntegrations(f)
-            if self.ignoreFile(f.localFile):
+            # 1047 Custom - Use Depot File for Ignore
+            if self.ignoreFile(f.depotFile):
                 self.logger.warning("Ignoring file: %s#%s" % (f.depotFile, f.rev))
                 self.filesToIgnore.append(f.localFile)
             elif f.action == 'edit':
@@ -1505,6 +1520,8 @@ class P4Target(P4Base):
         self.renameOfDeletedFileEncountered = False
         self.resolveDeleteEncountered = False
         self.filesToIgnore = []
+        # 1047 Custom - Refresh connection to avoid timeout
+        self.reconnect('target replicate')
         self.processChangeRevs(fileRevs, specialMoveRevs, srcFileLogs)
         newChangeId = None
 
@@ -1526,11 +1543,16 @@ class P4Target(P4Base):
                 # Debug for larger changelists
                 if lenOpenedFiles > 1000:
                     self.logger.debug("About to fetch change")
+                # 1047 Custom - Refresh connection to avoid timeout
+                self.reconnect('target replicate')
                 chg = self.p4.fetch_change()
                 chg['Description'] = description
                 if lenOpenedFiles > 1000:
                     self.logger.debug("About to submit")
-                result = self.p4.save_submit(chg)
+                # 1047 Custom - Refresh connection to avoid timeout
+                self.reconnect('target replicate')
+                # 1047 Custom - Parallel submit + submitunchanged
+                result = self.p4.save_submit(chg, '-f', 'submitunchanged', '--parallel=threads=8')
                 if lenOpenedFiles > 1000:
                     self.logger.debug("submitted")
                 self.logger.debug(self.p4id, result)
@@ -1567,10 +1589,14 @@ class P4Target(P4Base):
             while 'submittedChange' not in result[a]:
                 a -= 1
             newChangeId = result[a]['submittedChange']
+            # 1047 Custom - Refresh connection to avoid timeout
+            self.reconnect('target replicate')
             self.updateChange(change, newChangeId)
             self.reverifyRevisions(result)
 
         self.logger.info("source = {} : target = {}".format(change['change'], newChangeId))
+        # 1047 Custom - Refresh connection to avoid timeout
+        self.reconnect('target replicate')
         self.validateSubmittedChange(newChangeId, fileRevs)
         return newChangeId
 
@@ -2294,6 +2320,8 @@ class P4Transfer(object):
         self.options.stream_views = self.getOption(GENERAL_SECTION, "stream_views")
         self.options.workspace_root = self.getOption(GENERAL_SECTION, "workspace_root")
         self.options.ignore_files = self.getOption(GENERAL_SECTION, "ignore_files")
+        # 1047 Custom - Exclude Paths when pulling
+        self.options.exclude_paths = self.getOption(GENERAL_SECTION, "exclude_paths")
         if not self.options.views and not self.options.stream_views:
             errors.append("One of options views/stream_views must be specified")
         if not self.options.workspace_root:
@@ -2392,6 +2420,8 @@ class P4Transfer(object):
                 self.logger.info(msg)
                 fileRevs, specialMoveRevs, srcFileLogs = self.source.getChange(change['change'])
                 targetChange = self.target.replicateChange(fileRevs, specialMoveRevs, srcFileLogs, change, self.source.p4.port)
+                # 1047 Custom - Refresh connection to avoid timeout
+                self.target.reconnect('target replicate')
                 self.target.setCounter(change['change'])
                 self.target.updateChangeMap(self.source.p4.port, change['change'], targetChange)
                 # Tidy up the workspaces after successful transfer
@@ -2399,6 +2429,8 @@ class P4Transfer(object):
                 with self.target.p4.at_exception_level(P4.P4.RAISE_NONE):
                     self.target.p4cmd('sync', "//%s/...#0" % self.target.P4CLIENT)
                 changesTransferred += 1
+            # 1047 Custom - Refresh connection to avoid timeout
+            self.target.reconnect('target replicate')
             self.target.submitChangeMap()
         self.source.disconnect()
         self.target.disconnect()
