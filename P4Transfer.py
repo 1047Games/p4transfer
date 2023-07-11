@@ -909,9 +909,10 @@ class P4Base(object):
                     line = "%s/... //%s/..." % (src, self.p4.client)
                     clientspec._view.append(line)
                     # 1047 Custom - Exclude files when pulling
-                    for exclude_path in self.options.exclude_paths:
-                        line = "-%s%s //%s%s" % (src, exclude_path, self.p4.client, exclude_path)
-                        clientspec._view.append(line)
+                    if self.options.exclude_paths:
+                        for exclude_path in self.options.exclude_paths:
+                            line = "-%s%s //%s%s" % (src, exclude_path, self.p4.client, exclude_path)
+                            clientspec._view.append(line)
             else:
                 # 1047 Custom - Don't create a new stream
                 # transferStream = self.p4.fetch_stream(self.options.transfer_target_stream)
@@ -1520,7 +1521,7 @@ class P4Target(P4Base):
                 # 1047 Custom - Refresh connection to avoid timeout
                 self.reconnect('target replicate')
                 # 1047 Custom - Parallel submit + submitunchanged
-                result = self.p4.save_submit(chg, '-f', 'submitunchanged', '--parallel=threads=8')
+                result = self.p4.save_submit(chg, '-f', 'submitunchanged')
                 if lenOpenedFiles > 1000:
                     self.logger.debug("submitted")
                 self.logger.debug(self.p4id, result)
