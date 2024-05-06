@@ -974,12 +974,22 @@ class P4Base(object):
         self.depotmap = self.localmap.reverse()
 
     def p4cmd(self, *args, **kwargs):
-        "Execute p4 cmd while logging arguments and results"
-        self.logger.debug(self.p4id, args)
-        output = self.p4.run(args, **kwargs)
-        self.logger.debug(self.p4id, output)
-        self.checkWarnings()
-        return output
+        maxRetries = 2
+        numRetries = 0
+        while True:
+            try:
+                "Execute p4 cmd while logging arguments and results"
+                self.logger.debug(self.p4id, args)
+                output = self.p4.run(args, **kwargs)
+                self.logger.debug(self.p4id, output)
+                self.checkWarnings()
+                return output
+            except P4.P4Exception as e:
+                if numRetries >= maxRetries:
+                    raise e
+                self.logger.warning('p4cmd resutled in error, retrying {}'.format(str(self.p4.errors)))
+                self.reconnect(self.p4.prog)
+                numRetries += 1
 
     def disconnect(self):
         if self.p4:
